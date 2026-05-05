@@ -1,6 +1,6 @@
 # sigil-recognition
 
-A Roblox spell system where you draw glyphs on a piece of paper and a tiny neural net figures out what spell you're casting.
+A real-time hand-drawn glyph recognition system for casting spells in Roblox. Players draw a "sigil" (the central glyph that selects which element) plus optional "signs" around it (smaller glyphs that modulate the spell's form — direction, sustain, etc.). A pair of int8-quantized MLPs running in pure Luau classify the drawing and the cast resolves on the server.
 
 ## Demo
 
@@ -12,19 +12,17 @@ A Roblox spell system where you draw glyphs on a piece of paper and a tiny neura
 
 ![directional cast](media/directional.gif)
 
-## How it works
+## What it does
 
-You click a "spell paper" part in the world and the camera tilts overhead. You scribble a glyph — a triangle for fire, a wavy line for water, etc. — and you can add smaller marks around it to control how the spell behaves: an arrow makes it sustained, a T points it in a direction, no marks at all means it just explodes.
+The player clicks a "spell paper" part in the world, the camera tweens overhead, and they draw on a 64×64 grid surface attached to the part. After every stroke the system:
 
-After every stroke I run the canvas through a short pipeline:
+1. **Detects a closed ring** by flood-filling from the canvas border. The drawn cells the flood can't reach are "inside the ring."
+2. **Splits the inside ink into 4-connected components** — the central sigil plus any smaller marks placed around it.
+3. **Classifies each component**: small ones get tried against the **sign** model (column / levitation / `_other`); whatever isn't a sign gets merged into a single sigil mask and run through the **sigil** model (fire / water / earth / wind / `_other`).
+4. **Resolves direction geometrically** for sigils with prongs (sector-extremum ratio) and for signs by which rotation gave the best classification score.
+5. **Glows the paper for 1 s, then fires the cast remote** to the server, which dispatches to the matched sigil's `onCast` with the sign list as context.
 
-1. Flood-fill from the canvas border to figure out what's "inside" the ring you drew (if you've drawn one yet).
-2. Split that inside ink into 4-connected components — your central glyph plus any little marks beside it.
-3. Run each component through a sign classifier; whatever isn't a sign gets merged back into a single sigil mask and run through the sigil classifier.
-4. Recover orientation: sigils get a geometric "where does the dominant prong point" estimate, signs get one by trying 12 rotations through the model and taking the best score.
-5. Glow the paper for a second so you can stop drawing if you didn't mean to cast, then fire the cast remote to the server.
-
-The fun design choice here is that a spell's *form* comes from the signs, not the sigil. A fire sigil with no signs is just a chaotic AoE fireball. Add column signs lined up in a direction and it's a beam pointing that way. Add a levitation arrow and it sustains as a hovering orb. The sigil chooses the element; the signs shape it.
+A spell's *form* comes from the signs, not the sigil. A fire sigil with no signs is an AoE fireball; with column signs aligned in a direction it's a beam; with a levitation sign it's a sustained orb.
 
 ## Repo layout
 
@@ -72,26 +70,27 @@ CLAUDE.md                            architectural handoff notes (load-bearing d
 
 ## The model
 
-Two MLPs — one for sigils, one for signs. Both are deliberately small:
+A tiny MLP, one per task:
 
 ```
 input (32 × 32 = 1024)  →  Linear(64)  →  ReLU  →  Linear(C)  →  softmax
 ```
 
-`C` is however many sigils or signs are registered, plus an `_other` reject class. I quantize both weight matrices to int8 per-tensor, base64 the bytes, and emit a Lua module. At runtime the inference module decodes them once into a Roblox `buffer` and runs a hand-rolled `linear → relu → softmax`. A forward pass is around 5 ms in Luau on a server, which is comfortably fast enough to run after every stroke.
+`C` is the number of registered sigils/signs plus an `_other` reject class. Both weight matrices are int8-quantized per-tensor symmetric (~88 KB on disk per model after base64 encoding), decoded once at runtime into a Roblox `buffer`, and a single forward pass takes ~5 ms in Luau on a server.
 
-I tried a few approaches before landing on this. Pure dilated-IoU template matching (still in the codebase as a fallback) works fine on the canonical templates but falls apart on real player drawings — people draw too small, too tilted, with extra wiggles. You can dilate harder to make IoU more forgiving, but then your distinct glyphs start matching each other and everything turns into "fire." A small classifier learns the right invariances cheaply, and the `_other` class lets it answer "that's nothing" instead of always picking the closest registered glyph.
+The reason for an MLP rather than just template-IoU matching: hand drawings vary in stroke thickness, position, and proportion in ways IoU can't tolerate without aggressive dilation, which then makes distinct glyphs collide. A small classifier learns the right invariances cheaply, and the `_other` class gives it a way to *reject* random scribbles instead of always picking the closest registered glyph.
 
-## Training
+A dilated-IoU template matcher remains in the codebase as a fallback; if the model module is empty (placeholder) the matcher falls through to it, so the system stays functional during dev.
 
-`train.py` does the whole loop — load templates, augment, train, quantize, emit Lua.
+## Training pipeline
 
-The data flow is annoying because PyTorch obviously can't run inside Roblox, so it goes:
+`train.py` produces `SigilModel.lua` / `SignModel.lua` that get pasted into Studio.
 
-1. Paste `training/export_templates.luau` into Studio's Command Bar — it dumps the canonical 32×32 grid for every registered glyph as JSON.
-2. Save that as `training/templates.json` and run `python train.py`.
-3. Each canonical template gets blown up to 800 synthetic samples via random rotation (sigils ±25°, signs full ±180°), scale ±15%, ±3 cell translation, dilation, stroke-drop, and a bit of salt-and-pepper noise. The `_other` class gets generated from random lines, arcs, and blobs.
-4. ~30 epochs later you get `SigilModel.lua` and `SignModel.lua`. Copy-paste those over the placeholder ModuleScripts in Studio. Yes, manually — the files are ~88 KB of base64 each, too big for any pipe-it-in approach I had patience for.
+1. **Export**: paste `training/export_templates.luau` into Studio's Command Bar. It clones the registries (sidesteps any stale `require` cache), iterates registered entries, and prints the canonical 32×32 grid for each as JSON. Save as `training/templates.json`.
+2. **Augment**: each canonical template is replicated 800× per class via random rotation (sigils ±25°, signs full ±180°), scale ±15%, ±3 cell translation, dilation 0–2, stroke-drop, and salt-and-pepper noise. The `_other` class gets 1.5× more samples generated as random lines/arcs/blobs.
+3. **Train**: 30 epochs, Adam, cross-entropy, batch 64. ~30–60 s on CPU.
+4. **Quantize and emit**: weights → int8 → base64 → Lua module file.
+5. **Paste**: copy the generated `.lua` files into the corresponding ModuleScripts in Studio.
 
 ```
 cd training
@@ -99,24 +98,24 @@ pip install -r requirements.txt
 python train.py
 ```
 
-## Adding a sigil
+## Adding a new sigil
 
-Mirror `src/SpellSystem/Sigils/Fire.lua`. Each sigil is one self-contained module that registers itself when required:
+Mirror `src/SpellSystem/Sigils/Fire.lua`:
 
-- `buildVisual(buf)` draws the canonical glyph into a `GridBuffer` using the Bresenham primitives.
-- `buildTemplate()` renders a full ring + visual on a 64×64 canvas, runs the ring detector, and normalizes the inside-ink down to 32×32. The matcher is trained against this output, so it has to match what runtime inference will see.
-- `onCast(ctx)` runs the server-side effects. `ctx.signs` tells you what's around the sigil so you can shape the spell.
-- Optional `verify(normalized, raw) -> bool` for a per-class structural check. Fire's verifier rejects shapes that don't have a long enough vertical line through the middle, since the classifier sometimes confidently picks "fire" for a bare triangle.
+- `buildVisual(buf)` draws the canonical glyph into a `GridBuffer` using `Bresenham` primitives.
+- `buildTemplate()` renders a full ring + visual on a 64×64 canvas, runs `RingDetector.detect`, normalizes the inside-ink to 32×32.
+- `onCast(ctx)` runs server-side effects, with `ctx.signs` describing the surrounding signs.
+- Optional `verify(normalized, raw) -> bool` for per-class shape checks (Fire's verifier enforces the central vertical line).
 
 Then re-export, retrain, and re-paste the model files.
 
-## What was hard
+## Why this is interesting
 
-A few things that took longer than I'd like to admit:
+A few problems that took some thought:
 
-- **Getting the trained model into Roblox.** No HTTP for model downloads, no native model format, no easy way to ship binary data into a Lua runtime. I ended up quantizing to int8, base64-ing the bytes, and emitting a Lua table that gets manually pasted in. Not elegant, but it works and the inference is genuinely fast.
-- **Splitting noisy drawings into sigil + signs without hardcoding positions.** The flood-fill ring detector plus 4-connected components handles this without me having to declare regions like "signs go in these four boxes." A sign sticking partway out of the ring still gets routed correctly because the matcher only sees inside-the-ring ink in the first place.
-- **Saying no.** A naive classifier always returns *something*, but players draw garbage all the time. The `_other` reject class plus a confidence threshold catches most of it; the per-class verifiers catch the rest — cases where the classifier confidently picks the wrong glyph because two glyphs share a gross shape (a triangle alone vs. a fire glyph with a line through it).
-- **Keeping training and inference in lockstep.** The Lua normalizer fills the longer axis to 100% of the target size. I had a Python `recenter` step in the data loader that was filling to 85%, and Wind's narrow S-curve was failing classification because the train-time and infer-time shapes were subtly off. Removing the Python recenter fixed it. There are a handful of these synchronization points and it's worth the discipline of writing them down.
+- **Cross-runtime model deployment.** PyTorch trains, but inference has to run in Luau without HTTP. The pipeline ends with the training script writing a Lua module containing base64-encoded int8 weights, and a hand-rolled `linear / relu / softmax` in pure Luau decoding into a `buffer`. ~5 ms per forward pass.
+- **Decomposing a noisy drawing into sigil + signs.** The flood-fill ring detector + 4-connected component finder cleanly separates the central glyph from peripheral marks without needing to hard-code positions. Sign rotation is recovered by sweeping 12 rotations through the model and keeping the highest-scoring orientation.
+- **Resisting false positives.** A naive classifier always returns *something*, and players draw nonsense all the time. The `_other` reject class plus a confidence threshold keep the matcher quiet when the input isn't a real glyph; per-class verifiers catch shapes that pass classification but are missing required structural features (e.g., a Fire glyph without the central vertical line).
+- **Modular sigil/sign registry.** Adding a new spell is one file: define the visual, define `onCast`, register. The matcher and training pipeline pick it up automatically.
 
-For the deeper architectural notes — the gotchas, the design decisions I half-regretted, the pieces that almost got built differently — see [`CLAUDE.md`](CLAUDE.md).
+See `CLAUDE.md` for the full architectural breakdown including the gotchas that shaped the current design (sticky require cache, normalizer aspect-ratio mismatches, component-merging vs. central-component-only, etc.).
