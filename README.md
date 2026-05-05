@@ -4,10 +4,13 @@ A real-time hand-drawn glyph recognition system for casting spells in Roblox. Pl
 
 ## Demo
 
-Two short clips of the system in action:
+**Non-directional cast** — sigil drawn inside the ring with no shaping signs, so the spell resolves as an AoE form:
 
-- [`media/containedex.mp4`](media/containedex.mp4) — drawing a sigil inside the ring
-- [`media/directionalex.mp4`](media/directionalex.mp4) — using column signs to direct the spell
+![non-directional cast](media/contained.gif)
+
+**Directional cast** — adding a column (T) sign points the spell along that axis, here as a horizontal beam:
+
+![directional cast](media/directional.gif)
 
 ## What it does
 
