@@ -1,14 +1,14 @@
 # sigil-recognition
 
-A real-time hand-drawn glyph recognition system for casting spells in Roblox. Players draw a "sigil" (the central glyph that selects which element) plus optional "signs" around it (smaller glyphs that modulate the spell's form — direction, sustain, etc.). A pair of int8-quantized MLPs running in pure Luau classify the drawing and the cast resolves on the server.
+A real-time hand-drawn glyph recognition system for casting spells in Roblox. Players draw a "sigil" (the central glyph that selects which element) plus optional "signs" around it (smaller glyphs that modulate the spell's form: direction, sustain, etc.). A pair of int8-quantized MLPs running in pure Luau classify the drawing and the cast resolves on the server.
 
 ## Demo
 
-**Non-directional cast** — sigil drawn inside the ring with no shaping signs, so the spell resolves as an AoE form:
+**Non-directional cast**: sigil drawn inside the ring with no shaping signs, so the spell resolves as an AoE form:
 
 ![non-directional cast](media/contained.gif)
 
-**Directional cast** — adding a column (T) sign points the spell along that axis, here as a horizontal beam:
+**Directional cast**: adding a column (T) sign points the spell along that axis, here as a horizontal beam:
 
 ![directional cast](media/directional.gif)
 
@@ -17,7 +17,7 @@ A real-time hand-drawn glyph recognition system for casting spells in Roblox. Pl
 The player clicks a "spell paper" part in the world, the camera tweens overhead, and they draw on a 64×64 grid surface attached to the part. After every stroke the system:
 
 1. **Detects a closed ring** by flood-filling from the canvas border. The drawn cells the flood can't reach are "inside the ring."
-2. **Splits the inside ink into 4-connected components** — the central sigil plus any smaller marks placed around it.
+2. **Splits the inside ink into 4-connected components**: the central sigil plus any smaller marks placed around it.
 3. **Classifies each component**: small ones get tried against the **sign** model (column / levitation / `_other`); whatever isn't a sign gets merged into a single sigil mask and run through the **sigil** model (fire / water / earth / wind / `_other`).
 4. **Resolves direction geometrically** for sigils with prongs (sector-extremum ratio) and for signs by which rotation gave the best classification score.
 5. **Glows the paper for 1 s, then fires the cast remote** to the server, which dispatches to the matched sigil's `onCast` with the sign list as context.
