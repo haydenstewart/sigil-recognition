@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Rojo build artifacts (keep src/, ignore built places)
+build/
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx

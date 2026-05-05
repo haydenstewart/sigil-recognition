@@ -1,0 +1,23 @@
+{
+    "name": "sigil-recognition",
+    "tree": {
+        "$className": "DataModel",
+        "ReplicatedStorage": {
+            "$className": "ReplicatedStorage",
+            "SpellSystem": {
+                "$path": "src/SpellSystem"
+            }
+        },
+        "ServerScriptService": {
+            "$className": "ServerScriptService",
+            "$path": "src/ServerScriptService"
+        },
+        "StarterPlayer": {
+            "$className": "StarterPlayer",
+            "StarterPlayerScripts": {
+                "$className": "StarterPlayerScripts",
+                "$path": "src/StarterPlayerScripts"
+            }
+        }
+    }
+}
